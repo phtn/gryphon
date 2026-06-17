@@ -1,0 +1,7 @@
+build/
+gryphon.db
+.git/
+.github/
+.DS_Store
+*.beam
+*.ez

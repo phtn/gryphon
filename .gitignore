@@ -1,0 +1,5 @@
+build/
+gryphon.db
+.DS_Store
+*.beam
+*.ez

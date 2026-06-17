@@ -1,0 +1,17 @@
+API_K=ZXlKMGVYQWlPaUpLVjFRaUxDSmhiR2NpT2lKRlV6STFOaUlzSW10cFpDSTZJbUpsWVhKbGNpMWhjR2t0YTJWNUluMC5leUp6ZFdJaU9pSnlZWEJwWkhNdE1ERWlMQ0psZUhBaU9qRTVPVGs1T1RrNU9UY3NJbWxoZENJNk1UY3hNREF3TURBd01Dd2lhWE56SWpvaWNtVXRkWEF1Y0dnaUxDSmhkV1FpT2lKeVlYQnBaSE1pZlEuR0xmWVoxNWI1UkpyRENEWk1xYnNEdlVCbWVSSmJIRmp4WjBBQ29wUjFoYnQzSm80M1A5Sjk1VW1ZX3RnUk9kTjRFM2FmUU1QYm5TZ0h2dE5UNVdYV3cK
+
+curl -fSs --resolve g6896fe72d0.glyphon.dev:4000:127.0.0.1 http://g6896fe72d0.glyphon.dev:4000/v1/keys \
+  -H "Authorization: Bearer ${API_K}" \
+  -d '{"prefix": "rpb",
+"suffix": "eat_a55",
+"type": "dev",
+ "length": 32,
+ "charset": "base64url",
+ "expiresAt": null,  
+ "name": "Public 455",
+ "scopes": ["read", "write"],
+ "rateLimit": 100,
+ "metadata":{
+  "env": "dev",
+ }
+}'| jq 
