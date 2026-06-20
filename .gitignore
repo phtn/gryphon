@@ -3,3 +3,5 @@ gryphon.db
 .DS_Store
 *.beam
 *.ez
+
+sec.json

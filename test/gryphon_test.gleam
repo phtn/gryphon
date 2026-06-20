@@ -211,6 +211,11 @@ pub fn state_route_and_session_lifecycle_test() {
     state.resolve_route(state_subject, "demo")
   assert online_tunnel == created
   assert session_subject == control_1
+  let assert Ok(online_snapshot) =
+    state.snapshot(state_subject)
+    |> list.find(fn(snapshot) { snapshot.tunnel.subdomain == "demo" })
+  assert online_snapshot.status == state.Online
+  let assert option.Some(_) = online_snapshot.connected_at
 
   let control_2 = process.new_subject()
   state.register_session(state_subject, created, control_2)
@@ -227,6 +232,11 @@ pub fn state_route_and_session_lifecycle_test() {
   let assert state.OfflineTunnel(unregistered_tunnel) =
     state.resolve_route(state_subject, "demo")
   assert unregistered_tunnel == created
+  let assert Ok(offline_snapshot) =
+    state.snapshot(state_subject)
+    |> list.find(fn(snapshot) { snapshot.tunnel.subdomain == "demo" })
+  assert offline_snapshot.status == state.Offline
+  assert offline_snapshot.connected_at == option.None
 }
 
 pub fn subdomain_normalize_and_host_parse_test() {

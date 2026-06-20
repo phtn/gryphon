@@ -1,9 +1,11 @@
 import gleam/dict
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
+import gryphon/runtime
 import gryphon/session
 import gryphon/store
 import gryphon/types
@@ -16,6 +18,20 @@ pub type RouteResult {
   OnlineTunnel(types.Tunnel, process.Subject(session.SessionCommand))
 }
 
+pub type TunnelStatus {
+  Online
+  Offline
+  Revoked
+}
+
+pub type TunnelSnapshot {
+  TunnelSnapshot(
+    tunnel: types.Tunnel,
+    status: TunnelStatus,
+    connected_at: Option(Int),
+  )
+}
+
 pub type Message {
   ResolveRoute(reply_to: process.Subject(RouteResult), subdomain: String)
   AuthenticateAgent(
@@ -26,17 +42,26 @@ pub type Message {
     reply_to: process.Subject(Nil),
     tunnel: types.Tunnel,
     session: process.Subject(session.SessionCommand),
+    connected_at: Int,
   )
   UnregisterSession(
     tunnel_subdomain: String,
     session: process.Subject(session.SessionCommand),
+  )
+  Snapshot(reply_to: process.Subject(List(TunnelSnapshot)))
+}
+
+type ActiveSession {
+  ActiveSession(
+    control: process.Subject(session.SessionCommand),
+    connected_at: Int,
   )
 }
 
 type State {
   State(
     connection: sqlight.Connection,
-    sessions: dict.Dict(String, process.Subject(session.SessionCommand)),
+    sessions: dict.Dict(String, ActiveSession),
   )
 }
 
@@ -86,7 +111,12 @@ pub fn register_session(
   tunnel: types.Tunnel,
   control: process.Subject(session.SessionCommand),
 ) -> Nil {
-  process.call(subject, 5000, RegisterSession(_, tunnel, control))
+  process.call(subject, 5000, RegisterSession(
+    _,
+    tunnel,
+    control,
+    runtime.unix_millis(),
+  ))
 }
 
 pub fn unregister_session(
@@ -95,6 +125,10 @@ pub fn unregister_session(
   control: process.Subject(session.SessionCommand),
 ) -> Nil {
   process.send(subject, UnregisterSession(tunnel_subdomain:, session: control))
+}
+
+pub fn snapshot(subject: process.Subject(Message)) -> List(TunnelSnapshot) {
+  process.call(subject, 5000, Snapshot)
 }
 
 fn handle_message(
@@ -108,7 +142,7 @@ fn handle_message(
       {
         Ok(Some(tunnel)) ->
           case dict.get(state.sessions, requested_subdomain) {
-            Ok(session_subject) -> OnlineTunnel(tunnel, session_subject)
+            Ok(active) -> OnlineTunnel(tunnel, active.control)
             Error(_) -> OfflineTunnel(tunnel)
           }
         Ok(None) -> UnknownSubdomain
@@ -130,13 +164,22 @@ fn handle_message(
       actor.continue(state)
     }
 
-    RegisterSession(reply_to, tunnel, control) -> {
+    RegisterSession(reply_to, tunnel, control, connected_at) -> {
       let sessions = case dict.get(state.sessions, tunnel.subdomain) {
-        Ok(previous) if previous != control -> {
-          process.send(previous, session.ForceDisconnect)
-          dict.insert(state.sessions, tunnel.subdomain, control)
+        Ok(previous) if previous.control != control -> {
+          process.send(previous.control, session.ForceDisconnect)
+          dict.insert(
+            state.sessions,
+            tunnel.subdomain,
+            ActiveSession(control:, connected_at:),
+          )
         }
-        _ -> dict.insert(state.sessions, tunnel.subdomain, control)
+        _ ->
+          dict.insert(
+            state.sessions,
+            tunnel.subdomain,
+            ActiveSession(control:, connected_at:),
+          )
       }
 
       process.send(reply_to, Nil)
@@ -145,12 +188,50 @@ fn handle_message(
 
     UnregisterSession(tunnel_subdomain, control) -> {
       let sessions = case dict.get(state.sessions, tunnel_subdomain) {
-        Ok(current) if current == control ->
+        Ok(current) if current.control == control ->
           dict.delete(state.sessions, tunnel_subdomain)
         _ -> state.sessions
       }
 
       actor.continue(State(..state, sessions: sessions))
+    }
+
+    Snapshot(reply_to) -> {
+      let snapshots = case store.list_tunnels(state.connection) {
+        Ok(tunnels) ->
+          list.map(tunnels, fn(tunnel) {
+            case tunnel.revoked_at {
+              Some(_) ->
+                TunnelSnapshot(
+                  tunnel: tunnel,
+                  status: Revoked,
+                  connected_at: None,
+                )
+              None ->
+                case dict.get(state.sessions, tunnel.subdomain) {
+                  Ok(active) ->
+                    TunnelSnapshot(
+                      tunnel: tunnel,
+                      status: Online,
+                      connected_at: Some(active.connected_at),
+                    )
+                  Error(_) ->
+                    TunnelSnapshot(
+                      tunnel: tunnel,
+                      status: Offline,
+                      connected_at: None,
+                    )
+                }
+            }
+          })
+        Error(error) -> {
+          logging.log(logging.Error, error)
+          []
+        }
+      }
+
+      process.send(reply_to, snapshots)
+      actor.continue(state)
     }
   }
 }

@@ -11,6 +11,7 @@ import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/otp/supervision
 import gleam/string
+import gryphon/control_json
 import gryphon/header_policy
 import gryphon/protocol
 import gryphon/runtime
@@ -37,6 +38,7 @@ pub type Config {
     interface: String,
     port: Int,
     base_domain: String,
+    admin_token: Option(String),
     state_subject: process.Subject(state.Message),
   )
 }
@@ -85,13 +87,62 @@ fn handle_request(
   config: Config,
   request: http_request.Request(mist.Connection),
 ) -> http_response.Response(mist.ResponseData) {
-  case request.path == "/healthz" {
+  case request.path == "/healthz" || request.path == "/readyz" {
     True -> response_with_text(200, "ok")
     False ->
-      case request.path == "/v1/agent/connect" {
-        True -> handle_agent_connect(config, request)
-        False -> handle_public_request(config, request)
+      case string.starts_with(request.path, "/v1/admin/") {
+        True -> handle_admin_request(config, request)
+        False ->
+          case request.path == "/v1/agent/connect" {
+            True -> handle_agent_connect(config, request)
+            False -> handle_public_request(config, request)
+          }
       }
+  }
+}
+
+fn handle_admin_request(
+  config: Config,
+  request: http_request.Request(mist.Connection),
+) -> http_response.Response(mist.ResponseData) {
+  case config.admin_token {
+    None -> response_with_text(404, "admin API is disabled")
+    Some(expected_token) ->
+      case bearer_token(request) {
+        Some(provided_token) if provided_token == expected_token ->
+          route_admin_request(config, request)
+        _ -> admin_unauthorized_response()
+      }
+  }
+}
+
+fn route_admin_request(
+  config: Config,
+  request: http_request.Request(mist.Connection),
+) -> http_response.Response(mist.ResponseData) {
+  case request.path {
+    "/v1/admin/tunnels" ->
+      response_with_json(
+        200,
+        state.snapshot(config.state_subject)
+          |> control_json.dashboard_snapshot,
+      )
+
+    "/v1/admin/sessions" ->
+      response_with_json(
+        200,
+        state.snapshot(config.state_subject)
+          |> control_json.session_snapshot,
+      )
+
+    "/v1/admin/status" ->
+      response_with_json(
+        200,
+        state.snapshot(config.state_subject)
+          |> control_json.dashboard_snapshot,
+      )
+
+    _ -> response_with_text(404, "unknown admin endpoint")
   }
 }
 
@@ -444,6 +495,15 @@ fn response_with_text(
   |> http_response.set_body(mist.Bytes(bytes_tree.from_string(body)))
 }
 
+fn response_with_json(
+  status: Int,
+  body: String,
+) -> http_response.Response(mist.ResponseData) {
+  http_response.new(status)
+  |> http_response.set_header("content-type", "application/json")
+  |> http_response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+}
+
 fn unauthorized_response(
   message: String,
 ) -> http_response.Response(mist.ResponseData) {
@@ -452,6 +512,11 @@ fn unauthorized_response(
     "{\"event\":\"agent_auth_failed\",\"reason\":\"" <> message <> "\"}",
   )
   response_with_text(401, message)
+}
+
+fn admin_unauthorized_response() -> http_response.Response(mist.ResponseData) {
+  logging.log(logging.Warning, "{\"event\":\"admin_auth_failed\"}")
+  response_with_text(401, "invalid admin token")
 }
 
 fn bearer_token(request: http_request.Request(body)) -> Option(String) {
